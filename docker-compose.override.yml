@@ -1,0 +1,63 @@
+version: '3.8'
+
+# Development overrides
+services:
+  test-runner:
+    environment:
+      - NODE_ENV=development
+      - LOG_LEVEL=debug
+      - HEADLESS=false
+    volumes:
+      - .:/app
+      - /app/node_modules
+    ports:
+      - "9229:9229" # Debug port
+    command: ["npm", "run", "build:watch"]
+
+  selenium-hub:
+    ports:
+      - "4444:4444"
+      - "4442:4442"
+      - "4443:4443"
+      - "4445:4445" # EventBus port
+      - "4446:4446" # SessionMap port
+
+  chrome-node:
+    environment:
+      - NODE_MAX_INSTANCES=1
+      - NODE_MAX_SESSION=1
+    ports:
+      - "5900:5900" # VNC port for debugging
+
+  firefox-node:
+    environment:
+      - NODE_MAX_INSTANCES=1
+      - NODE_MAX_SESSION=1
+    ports:
+      - "5901:5900" # VNC port for debugging
+
+  # Development API for testing
+  dev-api:
+    image: node:18-alpine
+    container_name: dev-api
+    working_dir: /app
+    command: ["npm", "run", "dev"]
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./dev-api:/app
+    environment:
+      - NODE_ENV=development
+    networks:
+      - test-network
+
+  # File server for serving test assets
+  file-server:
+    image: nginx:alpine
+    container_name: test-file-server
+    ports:
+      - "8081:80"
+    volumes:
+      - ./test-assets:/usr/share/nginx/html
+    networks:
+      - test-network

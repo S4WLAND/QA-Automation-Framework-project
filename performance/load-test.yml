@@ -1,0 +1,162 @@
+config:
+  target: '{{ $processEnvironment.TARGET_URL || "http://localhost:3000" }}'
+  phases:
+    - duration: 60
+      arrivalRate: 10
+      name: "Warm up phase"
+    - duration: 120
+      arrivalRate: 50
+      name: "Load test phase"
+    - duration: 60
+      arrivalRate: 100
+      name: "Spike test phase"
+  defaults:
+    headers:
+      User-Agent: "Artillery Performance Test"
+  plugins:
+    metrics-by-endpoint:
+      useOnlyRequestNames: true
+    statsd:
+      host: localhost
+      port: 8125
+      prefix: "artillery"
+
+scenarios:
+  - name: "User Journey - Browse and Purchase"
+    weight: 40
+    flow:
+      - get:
+          url: "/"
+          capture:
+            - json: "$.sessionId"
+              as: "sessionId"
+          expect:
+            - statusCode: 200
+            - hasHeader: "content-type"
+      
+      - think: 2
+      
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "test{{ $randomInt(1, 1000) }}@example.com"
+            password: "Test123!"
+          capture:
+            - json: "$.token"
+              as: "authToken"
+          expect:
+            - statusCode: 200
+      
+      - think: 1
+      
+      - get:
+          url: "/api/products"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          expect:
+            - statusCode: 200
+            - contentType: json
+      
+      - think: 3
+      
+      - get:
+          url: "/api/products/{{ $randomInt(1, 100) }}"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          expect:
+            - statusCode: 200
+      
+      - think: 2
+      
+      - post:
+          url: "/api/cart/add"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          json:
+            productId: "{{ $randomInt(1, 100) }}"
+            quantity: "{{ $randomInt(1, 5) }}"
+          expect:
+            - statusCode: 201
+      
+      - think: 1
+      
+      - get:
+          url: "/api/cart"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          expect:
+            - statusCode: 200
+
+  - name: "API Health Check"
+    weight: 10
+    flow:
+      - get:
+          url: "/health"
+          expect:
+            - statusCode: 200
+            - hasProperty: "status"
+
+  - name: "Search Functionality"
+    weight: 30
+    flow:
+      - get:
+          url: "/api/search"
+          qs:
+            q: "{{ $randomString() }}"
+            limit: 10
+          expect:
+            - statusCode: 200
+      
+      - think: 1
+      
+      - get:
+          url: "/api/search/suggestions"
+          qs:
+            term: "{{ $randomString() }}"
+          expect:
+            - statusCode: 200
+
+  - name: "User Registration"
+    weight: 20
+    flow:
+      - post:
+          url: "/api/auth/register"
+          json:
+            firstName: "{{ $randomString() }}"
+            lastName: "{{ $randomString() }}"
+            email: "perf_test_{{ $randomInt(1, 10000) }}@example.com"
+            password: "Test123!"
+          expect:
+            - statusCode: 201
+            - hasProperty: "userId"
+
+# Before and after hooks
+before:
+  flow:
+    - log: "Starting performance test run"
+    - get:
+        url: "/health"
+        expect:
+          - statusCode: 200
+
+after:
+  flow:
+    - log: "Performance test run completed"
+
+# Custom functions for test data generation
+functions:
+  generateTestUser:
+    - set:
+        email: "perf_{{ $randomInt(1, 10000) }}@test.com"
+        password: "Test123!"
+        firstName: "{{ $randomString(8) }}"
+        lastName: "{{ $randomString(10) }}"
+
+# Performance thresholds
+ensure:
+  maxErrorRate: 5 # Maximum 5% error rate
+  thresholds:
+    - http.response_time.p99: 2000  # 99th percentile under 2 seconds
+    - http.response_time.p95: 1000  # 95th percentile under 1 second
+    - http.response_time.median: 500 # Median under 500ms
+    - vusers.failed: 0  # No failed virtual users

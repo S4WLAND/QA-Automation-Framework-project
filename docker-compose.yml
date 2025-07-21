@@ -1,0 +1,255 @@
+version: '3.8'
+
+services:
+  # Selenium Grid Hub
+  selenium-hub:
+    image: selenium/hub:4.15.0
+    container_name: selenium-hub
+    ports:
+      - "4444:4444"
+      - "4442:4442"
+      - "4443:4443"
+    environment:
+      - GRID_MAX_SESSION=16
+      - GRID_BROWSER_TIMEOUT=300
+      - GRID_TIMEOUT=300
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4444/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Chrome Node
+  chrome-node:
+    image: selenium/node-chrome:4.15.0
+    shm_size: 2gb
+    depends_on:
+      - selenium-hub
+    environment:
+      - HUB_HOST=selenium-hub
+      - HUB_PORT=4444
+      - NODE_MAX_INSTANCES=3
+      - NODE_MAX_SESSION=3
+    volumes:
+      - /dev/shm:/dev/shm
+    networks:
+      - test-network
+    deploy:
+      replicas: 2
+
+  # Firefox Node
+  firefox-node:
+    image: selenium/node-firefox:4.15.0
+    shm_size: 2gb
+    depends_on:
+      - selenium-hub
+    environment:
+      - HUB_HOST=selenium-hub
+      - HUB_PORT=4444
+      - NODE_MAX_INSTANCES=3
+      - NODE_MAX_SESSION=3
+    volumes:
+      - /dev/shm:/dev/shm
+    networks:
+      - test-network
+    deploy:
+      replicas: 1
+
+  # Edge Node
+  edge-node:
+    image: selenium/node-edge:4.15.0
+    shm_size: 2gb
+    depends_on:
+      - selenium-hub
+    environment:
+      - HUB_HOST=selenium-hub
+      - HUB_PORT=4444
+      - NODE_MAX_INSTANCES=3
+      - NODE_MAX_SESSION=3
+    volumes:
+      - /dev/shm:/dev/shm
+    networks:
+      - test-network
+    deploy:
+      replicas: 1
+
+  # Main Test Runner
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test-runner
+    depends_on:
+      - selenium-hub
+      - chrome-node
+      - firefox-node
+      - edge-node
+    environment:
+      - SELENIUM_HUB_HOST=selenium-hub
+      - SELENIUM_HUB_PORT=4444
+      - HEADLESS=true
+      - CI=true
+      - MAX_INSTANCES=5
+      - TEST_ENVIRONMENT=docker
+    volumes:
+      - ./reports:/app/reports
+      - ./screenshots:/app/screenshots
+      - ./videos:/app/videos
+      - ./logs:/app/logs
+    networks:
+      - test-network
+    command: ["npm", "run", "test:e2e"]
+
+  # API Test Runner
+  api-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api-tests
+    environment:
+      - NODE_ENV=test
+      - API_BASE_URL=${API_BASE_URL:-http://localhost:3000}
+    volumes:
+      - ./reports:/app/reports
+    networks:
+      - test-network
+    command: ["npm", "run", "test:api"]
+
+  # Visual Regression Tests
+  visual-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: visual-tests
+    depends_on:
+      - selenium-hub
+      - chrome-node
+    environment:
+      - SELENIUM_HUB_HOST=selenium-hub
+      - SELENIUM_HUB_PORT=4444
+      - VISUAL_TESTING=true
+    volumes:
+      - ./screenshots:/app/screenshots
+      - ./reports:/app/reports
+    networks:
+      - test-network
+
+  # Performance Tests
+  performance-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: performance-tests
+    environment:
+      - TARGET_URL=${TARGET_URL:-http://localhost:3000}
+    volumes:
+      - ./reports:/app/reports
+    networks:
+      - test-network
+
+  # Security Tests
+  security-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: security-tests
+    environment:
+      - TARGET_URL=${TARGET_URL:-http://localhost:3000}
+    volumes:
+      - ./reports:/app/reports
+    networks:
+      - test-network
+
+  # Test Database
+  test-db:
+    image: mysql:8.0
+    container_name: test-database
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: testdb
+      MYSQL_USER: testuser
+      MYSQL_PASSWORD: testpass
+    ports:
+      - "3306:3306"
+    volumes:
+      - test-db-data:/var/lib/mysql
+      - ./database/init:/docker-entrypoint-initdb.d
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis for session storage
+  redis:
+    image: redis:7-alpine
+    container_name: test-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Allure Report Server
+  allure-server:
+    image: frankescobar/allure-docker-service
+    container_name: allure-server
+    ports:
+      - "5050:5050"
+    environment:
+      CHECK_RESULTS_EVERY_SECONDS: 3
+      KEEP_HISTORY: 5
+    volumes:
+      - ./reports/allure-results:/app/allure-results
+      - ./reports/allure-reports:/app/default-reports
+    networks:
+      - test-network
+
+  # Mock API Server
+  mock-api:
+    image: mockserver/mockserver:5.15.0
+    container_name: mock-api-server
+    ports:
+      - "1080:1080"
+    environment:
+      MOCKSERVER_PROPERTY_FILE: /config/mockserver.properties
+    volumes:
+      - ./mock-server/config:/config
+      - ./mock-server/expectations:/expectations
+    networks:
+      - test-network
+
+  # Test Results Dashboard
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: test-dashboard
+    ports:
+      - "8080:8080"
+    depends_on:
+      - test-db
+    environment:
+      - DB_HOST=test-db
+      - DB_USER=testuser
+      - DB_PASSWORD=testpass
+      - DB_NAME=testdb
+    volumes:
+      - ./reports:/app/reports
+    networks:
+      - test-network
+
+volumes:
+  test-db-data:
+
+networks:
+  test-network:
+    driver: bridge
